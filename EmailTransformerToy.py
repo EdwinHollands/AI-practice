@@ -13,3 +13,7 @@ vocab_size = len(vocab)
 
 print(f"Vocabulary size: {vocab_size}, list of characters: {vocab}")
 
+#now we need to build an encoder and decoder
+encode = lambda s: [vocab.index(c) for c in s]
+encoder = 
+
