@@ -1,6 +1,5 @@
-from random import randint
-from mpmath import rand
 import torch
+import torch.nn as nn
 #First we download our dataset
 
 #now retrieve it to process
@@ -32,18 +31,23 @@ train_data = data[:n]
 val_data = data[n:]
 
 #now lets pick a block size i.e. 'context length'
-block_size = 10
+block_size = 3
 
 #we will run multiple samples in parallel
-batch_size = 4
+batch_size = 2
 
-#now make a process to pull out a chunk of the data
+#now make a process to pull out a chunk of the data. Input string 'train' for training or 'val' for validation.
 def sample(set):
     data = train_data if set == 'train' else val_data
     samples=torch.randint(len(data)-block_size, (batch_size,))
     inputs = torch.stack([data[i:i+block_size] for i in samples])
     targets = torch.stack([data[i+1:i+1+block_size] for i in samples])
+    # we create 2d tensors [batches*[samples]]
     return inputs, targets
+
+#so we feed samples into the transformer
+
+print(sample('train'))
 
 
 
