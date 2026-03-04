@@ -7,16 +7,16 @@ import torch.nn as nn
     #data = file.read()
 
 #for now, let's keep it simple
-text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nam hendrerit nisi sed sollicitudin pellentesque. Nunc posuere purus rhoncus pulvinar aliquam. Ut aliquet tristique nisl vitae volutpat. Nulla aliquet porttitor venenatis. Donec a dui et dui fringilla consectetur id nec massa. Aliquam erat volutpat. Sed ut dui ut lacus dictum fermentum vel tincidunt neque. Sed sed lacinia lectus. Duis sit amet sodales felis. Duis nunc eros, mattis at dui ac, convallis semper risus. In adipiscing ultrices tellus, in suscipit massa vehicula eu."
+text = "Hello world. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nam hendrerit nisi sed sollicitudin pellentesque. Nunc posuere purus rhoncus pulvinar aliquam. Ut aliquet tristique nisl vitae volutpat. Nulla aliquet porttitor venenatis. Donec a dui et dui fringilla consectetur id nec massa. Aliquam erat volutpat. Sed ut dui ut lacus dictum fermentum vel tincidunt neque. Sed sed lacinia lectus. Duis sit amet sodales felis. Duis nunc eros, mattis at dui ac, convallis semper risus. In adipiscing ultrices tellus, in suscipit massa vehicula eu."
 
 #let's check a sample
-print(f"First hundred characters are: {text[:100]}")
+#print(f"First hundred characters are: {text[:100]}")
 
 #Find our vocabulary in terms of characters
 vocab = sorted(list(set(text)))
 vocab_size = len(vocab)
 
-print(f"Vocabulary size: {vocab_size}, list of characters: {vocab}")
+#print(f"Vocabulary size: {vocab_size}, list of characters: {vocab}")
 
 #now we need to build an encoder and decoder
 encode = lambda s: [vocab.index(c) for c in s]
@@ -30,7 +30,7 @@ n=int(0.9*len(data))
 train_data = data[:n]
 val_data = data[n:]
 
-#now lets pick a block size i.e. 'context length'
+#now lets pick a block size i.e. 'context length', also called time steps?
 block_size = 3
 
 #we will run multiple samples in parallel
@@ -47,7 +47,40 @@ def sample(set):
 
 #so we feed samples into the transformer
 
-print(sample('train'))
+class BigramLanguageModel(nn.Module):
+    def __init__(self, vocab_size):
+        super().__init__() # number of embeddings = embedding dim = vocab size so each token is embedded as a vocab-size dimensional vector
+        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+
+    def forward(self, idx, targets=None):
+        # idx/inputs and targets both are 2d tensor batch*time
+        logits = self.token_embedding_table(idx)  # batch*time*vocab_size
+
+        if targets is None:
+            return logits, None
+
+        B, T, C = logits.shape # B is batch size, T is sequence length or time, C is vocab size
+        logits = logits.view(B*T, C) # B*T = number of tokens, vocab size. Reshaping so cross entropy sees vocab as 2nd dim
+        targets = targets.view(B*T)
+        loss = nn.functional.cross_entropy(logits, targets)
+        return logits, loss
+
+        #we need a way to generate
+    def generate(self, idx, max):
+        for _ in range(max):
+            logits, loss = self(idx)
+            logits = logits[:,-1,:] # just take the final prediction since we aren't training
+            probabilities = nn.functional.softmax(logits, dim=-1) #softmax to make a distribution
+            next = torch.multinomial(probabilities, num_samples=1) # sample the distribution
+            idx = torch.cat((idx, next), dim=1) # append the new token
+        return idx
+
+
+
+BLM = BigramLanguageModel(vocab_size)
+inputs = torch.tensor([encode('hello world')], dtype = torch.int64)
+new = decode(BLM.generate(inputs, 50)[0].tolist())
+print(new)
 
 
 
