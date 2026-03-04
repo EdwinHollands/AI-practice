@@ -31,7 +31,7 @@ train_data = data[:n]
 val_data = data[n:]
 
 #now lets pick a block size i.e. 'context length', also called time steps?
-block_size = 3
+block_size = 10
 
 #we will run multiple samples in parallel
 batch_size = 2
@@ -75,11 +75,23 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, next), dim=1) # append the new token
         return idx
 
+model = BigramLanguageModel(vocab_size)
+
+#Now we need to train
+optimiser = torch.optim.AdamW(model.parameters(), lr=0.001)
+
+batch_size = 128
+for _ in range(1000):
+    optimiser.zero_grad(set_to_none=True)
+    inputs, targets = sample('train')
+    logits, loss = model(inputs, targets)
+    loss.backward()
+    optimiser.step()
+print(loss.item())
 
 
-BLM = BigramLanguageModel(vocab_size)
 inputs = torch.tensor([encode('hello world')], dtype = torch.int64)
-new = decode(BLM.generate(inputs, 50)[0].tolist())
+new = decode(model.generate(inputs, 50)[0].tolist())
 print(new)
 
 
