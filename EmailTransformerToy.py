@@ -3,11 +3,11 @@ import torch.nn as nn
 #First we download our dataset
 
 #now retrieve it to process
-#with open('emails.txt', 'r') as file:
-    #data = file.read()
+with open('input.txt', 'r') as file:
+    text = file.read()
 
 #for now, let's keep it simple
-text = "Hello world. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nam hendrerit nisi sed sollicitudin pellentesque. Nunc posuere purus rhoncus pulvinar aliquam. Ut aliquet tristique nisl vitae volutpat. Nulla aliquet porttitor venenatis. Donec a dui et dui fringilla consectetur id nec massa. Aliquam erat volutpat. Sed ut dui ut lacus dictum fermentum vel tincidunt neque. Sed sed lacinia lectus. Duis sit amet sodales felis. Duis nunc eros, mattis at dui ac, convallis semper risus. In adipiscing ultrices tellus, in suscipit massa vehicula eu."
+#text = "Hello world. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nam hendrerit nisi sed sollicitudin pellentesque. Nunc posuere purus rhoncus pulvinar aliquam. Ut aliquet tristique nisl vitae volutpat. Nulla aliquet porttitor venenatis. Donec a dui et dui fringilla consectetur id nec massa. Aliquam erat volutpat. Sed ut dui ut lacus dictum fermentum vel tincidunt neque. Sed sed lacinia lectus. Duis sit amet sodales felis. Duis nunc eros, mattis at dui ac, convallis semper risus. In adipiscing ultrices tellus, in suscipit massa vehicula eu."
 
 #let's check a sample
 #print(f"First hundred characters are: {text[:100]}")
@@ -31,7 +31,7 @@ train_data = data[:n]
 val_data = data[n:]
 
 #now lets pick a block size i.e. 'context length', also called time steps?
-block_size = 10
+block_size = 8
 
 #we will run multiple samples in parallel
 batch_size = 2
@@ -80,7 +80,7 @@ model = BigramLanguageModel(vocab_size)
 #Now we need to train
 optimiser = torch.optim.AdamW(model.parameters(), lr=0.001)
 
-batch_size = 128
+batch_size = 4
 for _ in range(1000):
     optimiser.zero_grad(set_to_none=True)
     inputs, targets = sample('train')
