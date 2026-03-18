@@ -1,9 +1,15 @@
 # GET PYTORCH
 import torch
 import torch.nn as nn
+import time
+import os
 
 # USE GPU IF POSS
 device        = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+# activate the venv first
+# MIGHT NEED TO COPY TO TERMINA: C:\Users\echol\Documents\Coding\AI-practice\gpt_env\Scripts\activate
+
 
 # PARAMETERS ------------------------------------------
 heads = 6 #number of attention heads in parallel per block
@@ -14,11 +20,11 @@ emb_dim = Q_dim*heads #dimension of embedding space
 context_block = 256   #i.e. 'context length', also called time T
 batch_size = 64   #we will run multiple samples in parallel, B
 learn_rate = 0.0003
-dropout = 0.2 # blocks some weights in training to prevent overfitting
-iters = 500
+dropout = 0.3 # blocks some weights in training to prevent overfitting
+iters = 10000
 interval = 500
-prompt = 'Hello World'
-gen_length = 1000
+prompt = 'KING EDWIN:'
+gen_length = 10000
 
 # DATA --------------------------------------
 with open('input.txt', 'r') as file:
@@ -162,6 +168,7 @@ class LanguageModel(nn.Module):
         return inputs
 
 model = LanguageModel().to(device)
+print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
 
 # LOSS ESTIMATION --------------------------
 @torch.no_grad()
@@ -178,22 +185,65 @@ def estimate_loss():
     model.train()
     return out
 
-# TRAINING ----------------------------------------
+# CHOOSE OPTIMISER -------------------------
 optimiser = torch.optim.AdamW(model.parameters(), lr=learn_rate)
 
-for i in range(iters):
+# WARMUP ESTIMATE ----------------------------------------
+warmup_steps = 10
+print(f"Running {warmup_steps} warmup steps to estimate training time...")
+warmup_start = time.time()
+for i in range(warmup_steps):
+    optimiser.zero_grad(set_to_none=True)
+    inputs, targets = sample('train')
+    logits, loss = model(inputs, targets)
+    loss.backward()
+    optimiser.step()
+warmup_elapsed = time.time() - warmup_start
+
+time_per_step = warmup_elapsed / warmup_steps
+estimated_total = time_per_step * iters
+est_mins = int(estimated_total // 60)
+est_secs = int(estimated_total % 60)
+
+print(f"Estimated training time: {est_mins}m {est_secs}s for {iters} iterations")
+confirm = input("Continue? (y/n): ")
+if confirm.lower() != 'y':
+    print("Aborted.")
+    exit()
+
+# TRAINING ----------------------------------------
+start_time = time.time()
+for i in range(iters+1):
 
     optimiser.zero_grad(set_to_none=True) # forget previous grads
     inputs, targets = sample('train') # pull a sample
     logits, loss = model(inputs, targets) # runs 'forward' pass
     loss.backward() # compute the gradient of the loss as a function of the parameters (back prop)
-    if i % interval == 0:
+    if i % interval == 0 and i>0:
         losses = estimate_loss()
-        print(f"step {i}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        elapsed = time.time() - start_time
+        steps_done = i
+        steps_remaining = iters - i
+        time_per_step = elapsed / steps_done
+        eta_seconds = time_per_step * steps_remaining
+        eta_mins = int(eta_seconds // 60)
+        eta_secs = int(eta_seconds % 60)
+        print(f"step {i}/{iters}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f} | ETA {eta_mins}m {eta_secs}s")
     optimiser.step() # Update weights based on gradient flow scaled by learning rate
+total_time = time.time() - start_time
+total_mins = int(total_time // 60)
+total_secs = int(total_time % 60)
+print(f"Training complete in {total_mins}m {total_secs}s")
 
-
-#TESTING ----------------------
+#GENERATE TO FILE ----------------------
+model.eval()
 inputs = torch.tensor([encode(prompt)], dtype = torch.int64, device=device)
-new = decode(model.generate(inputs, gen_length)[0].tolist())
-print(new)
+with torch.no_grad():
+    generated = decode(model.generate(inputs, gen_length)[0].tolist())
+output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output.txt')
+with open(output_path, 'w', encoding='utf-8') as f:
+    f.write(generated)
+
+print(f"Generated {gen_length} tokens to output.txt")
+os.startfile(output_path)
+model.train()

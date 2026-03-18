@@ -12,7 +12,7 @@ emb_dim = heads*Q_dim #dimension of embedding space
 block_size = 8   #i.e. 'context length', also called time T
 batch_size = 32   #we will run multiple samples in parallel, B
 learn_rate = 0.001
-iters = 5000
+iters = 3000
 interval = 500
 prompt = 'Hello World'
 gen_length = 50
@@ -94,13 +94,14 @@ class FeedForward(nn.Module):
 
 # BLOCK OF ATTENTION AND PERCEPTRON
 class Block(nn.Module):
-    def __init__(self, emb_dim, heads, Q_dim):  
+    def __init__(self, emb_dim, heads, Q_dim):
+        super().__init__()
         self.sa = MultiHead(heads, Q_dim)
         self.ffwd = FeedForward(emb_dim)
 
     def forward(self, inputs):
-        inputs = self.sa(inputs)
-        inputs = self.ffwd(inputs)
+        inputs = inputs + self.sa(inputs)
+        inputs = inputs + self.ffwd(inputs)
         return inputs
 
 # DEFINE MODEL --------------------------------------------
@@ -113,9 +114,7 @@ class LanguageModel(nn.Module):
         #we associate each token and position to vectors in the embedding space
         self.lm_head = nn.Linear(emb_dim, vocab_size)
         # an affine linear map Ax+b that projects back from the embedding space to give logits for the vocabulary
-        self.sa_head = MultiHead(heads, Q_dim)
-        #a self attention head
-        self.ffwd = FeedForward(emb_dim)
+        self.blocks = nn.Sequential(Block(emb_dim, heads, Q_dim),Block(emb_dim, heads, Q_dim),Block(emb_dim, heads, Q_dim))
 
     # LOGITS AND LOSS -----
     def forward(self, inputs, targets=None):
@@ -123,8 +122,7 @@ class LanguageModel(nn.Module):
         tok_emb = self.token_embedding_table(inputs)  # batch x block x dim
         pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # block x dim
         emb = tok_emb + pos_emb
-        emb = self.sa_head(emb)
-        emb = self.ffwd(emb)
+        emb = self.blocks(emb)
         logits = self.lm_head(emb) # batch x block x vocab
 
         if targets is None:
@@ -167,7 +165,3 @@ for i in range(iters):
 inputs = torch.tensor([encode(prompt)], dtype = torch.int64, device=device)
 new = decode(model.generate(inputs, gen_length)[0].tolist())
 print(new)
-
-
-
-
