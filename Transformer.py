@@ -3,11 +3,13 @@ import torch
 import torch.nn as nn
 import time
 import os
+import tiktoken
+
 
 # USE GPU IF POSS
 device        = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# activate the venv first
+# !!!!!!!!!! activate the venv first
 # MIGHT NEED TO COPY TO TERMINA: C:\Users\echol\Documents\Coding\AI-practice\gpt_env\Scripts\activate
 
 
@@ -28,20 +30,16 @@ patience = 5 # stop after 5 reports of no improvement
 max_gap = 0.3  # stop if val loss exceeds train loss by this much
 
 # DATA --------------------------------------
-with open('input.txt', 'r') as file: #complete works of shakespeare
+with open('input.txt', 'r', encoding='utf-8', errors='ignore') as file: #complete works of shakespeare
     text = file.read()
 
 # VOCABULARY -------------------------------------
-vocab = sorted(list(set(text)))
-vocab_size = len(vocab)
-# note will cause errors if fed characters that aren't in the text sample
+enc = tiktoken.get_encoding('gpt2')
+vocab_size = enc.n_vocab # 50257
 
 # ENCODE/DECODE ------------------------------------------
-stoi = {ch: i for i, ch in enumerate(vocab)} 
-itos = {i: ch for i, ch in enumerate(vocab)}
-encode = lambda s: [stoi[c] for c in s]
-decode = lambda l: ''.join([itos[i] for i in l])
-# bijections between characters in the vocabulary and numbers, use dictionaries for O(1) time
+encode = lambda s: enc.encode(s, allowed_special={'<|endoftext|>'})
+decode = lambda l: enc.decode(l)
 
 # TENSOR and SPLIT -----------------------------------
 data = torch.tensor(encode(text), dtype = torch.int64)
@@ -60,7 +58,7 @@ def sample(dataset): #input 'train' for training
     targets = targets.to(device)
     return inputs, targets # both are batch x block
 
-# SELF ATTENTION HEAD ----------------------------------------
+# SELF ATTENTION HEAD [obsolete]----------------------------------------
 class Head(nn.Module):
     # INITIALISE ----
     def __init__(self, Q_dim):
@@ -87,14 +85,29 @@ class Head(nn.Module):
 
 # MULTI-HEAD ATTENTION -------------------------------------
 class MultiHead(nn.Module):
-    def __init__(self, heads, Q_dim):
+    def __init__(self):
         super().__init__()
-        self.heads = nn.ModuleList([Head(Q_dim) for _ in range(heads)])
-        self.project = nn.Linear(heads * Q_dim, emb_dim)
+        self.query = nn.Linear(emb_dim, emb_dim, bias=False) #questions
+        self.key = nn.Linear(emb_dim, emb_dim, bias=False) #detecting relevance
+        self.value = nn.Linear(emb_dim, emb_dim, bias=False) #answers
+        self.project = nn.Linear(emb_dim, emb_dim)
         self.dropout = nn.Dropout(dropout)
-    
+        self.register_buffer('tril', torch.tril(torch.ones(context_block,context_block)))
+
     def forward(self, inputs):
-        out = torch.cat([h(inputs) for h in self.heads], dim = -1)
+        B,T,C = inputs.shape
+        q = self.query(inputs) # BxTxC
+        k = self.key(inputs)
+        v = self.value(inputs)
+        q = q.view(B, T, heads, Q_dim).transpose(1, 2) #B x T x heads x Q_dim -> B x heads x T x Q_dim 
+        k = k.view(B, T, heads, Q_dim).transpose(1, 2)
+        v = v.view(B, T, heads, Q_dim).transpose(1, 2)
+        Aff = q @ k.transpose(-2,-1) * Q_dim **-0.5 # dot products -> batch x heads x block x block, scaled by 1/root(query dim) to control variance
+        Aff = Aff.masked_fill(self.tril[:T,:T] == 0, float('-inf')) # sets upper triangle to -inf so tokens can't see the future
+        Aff = nn.functional.softmax(Aff, dim=-1) # softmax: exp then normalise along rows
+        Aff = self.dropout(Aff)
+        out = Aff @ v # multiply affinities with values (B, n_heads, T, T) @ (B, n_heads, T, head_size) → (B, n_heads, T, head_size)
+        out = out.transpose(1, 2).contiguous().view(B, T, C) #reassembles
         return self.dropout(self.project(out))
 
 # PEREPTRON / FEED FORWARD --------------------------------------
@@ -113,9 +126,9 @@ class FeedForward(nn.Module):
 
 # LAYER OF ATTENTION AND PERCEPTRON
 class Layer(nn.Module):
-    def __init__(self, emb_dim, heads, Q_dim):
+    def __init__(self, emb_dim):
         super().__init__()
-        self.sa = MultiHead(heads, Q_dim)
+        self.sa = MultiHead()
         self.ffwd = FeedForward(emb_dim, ff_scalar)
         self.ln1  = nn.LayerNorm(emb_dim) #layer norms fix means and deviations for each token then does a linear transform
         self.ln2  = nn.LayerNorm(emb_dim)
@@ -133,7 +146,7 @@ class LanguageModel(nn.Module):
         self.token_embedding_table = nn.Embedding(vocab_size, emb_dim)
         self.position_embedding_table = nn.Embedding(context_block, emb_dim)
         # an affine linear map Ax+b that projects back from the embedding space to give logits for the vocabulary
-        self.layers = nn.Sequential(*[Layer(emb_dim, heads, Q_dim) for _ in range(layers)])
+        self.layers = nn.Sequential(*[Layer(emb_dim) for _ in range(layers)])
         self.ln = nn.LayerNorm(emb_dim)
         #we associate each token and position to vectors in the embedding space
         self.lm_head = nn.Linear(emb_dim, vocab_size)
@@ -193,12 +206,12 @@ print("  2. Generate from saved model")
 mode = input("Enter 1 or 2: ").strip()
 
 # TRAINING MODE -----------------------------
+warmup_steps = 10
 if mode == '1':
     # CHOOSE OPTIMISER -------------------------
     optimiser = torch.optim.AdamW(model.parameters(), lr=learn_rate)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=iters)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=iters+warmup_steps)
     # WARMUP ESTIMATE ----------------------------------------
-    warmup_steps = 10
     print(f"Running {warmup_steps} warmup steps to estimate training time...")
     warmup_start = time.time()
     for i in range(warmup_steps):
@@ -207,6 +220,7 @@ if mode == '1':
         logits, loss = model(inputs, targets)
         loss.backward()
         optimiser.step()
+        scheduler.step() # update the learning rate
     warmup_elapsed = time.time() - warmup_start
 
     time_per_step = warmup_elapsed / warmup_steps
@@ -278,8 +292,7 @@ elif mode == '2':
     if prompt == '':
         inputs = torch.zeros((1, 1), dtype=torch.int64, device=device)
     else:
-        prompt = ''.join([c for c in prompt if c in stoi])
-        inputs = torch.tensor([encode(prompt)], dtype = torch.int64, device=device)
+        inputs = torch.tensor([encode(prompt)], dtype=torch.int64, device=device)
     with torch.no_grad():
         generated = decode(model.generate(inputs, gen_length)[0].tolist())
     output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output.txt')
