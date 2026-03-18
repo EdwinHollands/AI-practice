@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import time
 import os
-import tiktoken
+from minbpe import BasicTokenizer # from Karpathy
 
 
 # USE GPU IF POSS
@@ -19,23 +19,26 @@ layers = 6 #number of attention/perceptron blocks
 ff_scalar = 4
 Q_dim = 64 #dimension of query space
 emb_dim = Q_dim*heads #dimension of embedding space
-context_block = 256   #i.e. 'context length', also called time T
-batch_size = 64   #we will run multiple samples in parallel, B
+context_block = 128   #i.e. 'context length', also called time T
+batch_size = 32   #we will run multiple samples in parallel, B
 learn_rate = 0.0003
 dropout = 0.3 # blocks some weights in training to prevent overfitting
 iters = 10000
 interval = 500
 gen_length = 1000
 patience = 5 # stop after 5 reports of no improvement
-max_gap = 0.3  # stop if val loss exceeds train loss by this much
+max_gap = 1.5  # stop if val loss exceeds train loss by this much
+vocab_size = 1000
 
 # DATA --------------------------------------
 with open('input.txt', 'r', encoding='utf-8', errors='ignore') as file: #complete works of shakespeare
     text = file.read()
 
-# VOCABULARY -------------------------------------
-enc = tiktoken.get_encoding('gpt2')
-vocab_size = enc.n_vocab # 50257
+# VOCAB TOKENISER ------------------------------------------
+tokenizer = BasicTokenizer()
+tokenizer.train(text, vocab_size=vocab_size, verbose=False)
+encode = lambda s: tokenizer.encode(s)
+decode = lambda l: tokenizer.decode(l)
 
 # ENCODE/DECODE ------------------------------------------
 encode = lambda s: enc.encode(s, allowed_special={'<|endoftext|>'})
