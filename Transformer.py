@@ -19,15 +19,16 @@ Q_dim = 64 #dimension of query space
 emb_dim = Q_dim*heads #dimension of embedding space
 context_block = 256   #i.e. 'context length', also called time T
 batch_size = 64   #we will run multiple samples in parallel, B
-learn_rate = 0.0001
-dropout = 0.5 # blocks some weights in training to prevent overfitting
+learn_rate = 0.0003
+dropout = 0.3 # blocks some weights in training to prevent overfitting
 iters = 10000
 interval = 500
-gen_length = 10000
-patience = 5
+gen_length = 1000
+patience = 5 # stop after 5 reports of no improvement
+max_gap = 0.3  # stop if val loss exceeds train loss by this much
 
 # DATA --------------------------------------
-with open('input.txt', 'r') as file:
+with open('input.txt', 'r') as file: #complete works of shakespeare
     text = file.read()
 
 # VOCABULARY -------------------------------------
@@ -231,6 +232,8 @@ if mode == '1':
         loss.backward() # compute the gradient of the loss as a function of the parameters (back prop)
         if i % interval == 0 and i>0:
             losses = estimate_loss()
+            val = losses['val']
+            train = losses['train']
             elapsed = time.time() - start_time
             steps_done = i
             steps_remaining = iters - i
@@ -238,9 +241,9 @@ if mode == '1':
             eta_seconds = time_per_step * steps_remaining
             eta_mins = int(eta_seconds // 60)
             eta_secs = int(eta_seconds % 60)
-            print(f"step {i}/{iters}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f} | ETA {eta_mins}m {eta_secs}s")
-            if losses['val'] < best_val_loss:
-                best_val_loss = losses['val']
+            print(f"step {i}/{iters}: train loss {train:.4f}, val loss {val:.4f} | ETA {eta_mins}m {eta_secs}s")
+            if val < best_val_loss:
+                best_val_loss = val
                 patience_counter = 0
                 torch.save(model.state_dict(), 'model.pt')
                 print(f"  ↳ new best val loss {best_val_loss:.4f}, model saved")
@@ -250,6 +253,10 @@ if mode == '1':
                 if patience_counter >= patience:
                     print(f"Early stopping at step {i}")
                     break
+            gap = val-train
+            if gap > max_gap:
+                print(f"Early stopping at step {i} — overfitting detected (gap {gap:.4f} > {max_gap})")
+                break
         optimiser.step() # Update weights based on gradient flow scaled by learning rate
         scheduler.step() # update the learning rate
     total_time = time.time() - start_time
@@ -266,6 +273,8 @@ elif mode == '2':
     print("Loaded model from model.pt")
     model.eval()
     prompt = input("Enter a prompt (or press Enter for zero): ").strip()
+    gen_length_input = input(f"Enter generation length in tokens (default {gen_length}): ").strip()
+    gen_length = int(gen_length_input) if gen_length_input != '' else gen_length
     if prompt == '':
         inputs = torch.zeros((1, 1), dtype=torch.int64, device=device)
     else:
