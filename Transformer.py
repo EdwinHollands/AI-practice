@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import time
 import os
+import matplotlib.pyplot as plt
 from minbpe import BasicTokenizer # from Karpathy
 
 
@@ -19,16 +20,17 @@ layers = 6 #number of attention/perceptron blocks
 ff_scalar = 4
 Q_dim = 64 #dimension of query space
 emb_dim = Q_dim*heads #dimension of embedding space
-context_block = 128   #i.e. 'context length', also called time T
+context_block = 512   #i.e. 'context length', also called time T
 batch_size = 32   #we will run multiple samples in parallel, B
 learn_rate = 0.0003
 dropout = 0.3 # blocks some weights in training to prevent overfitting
-iters = 10000
+iters = 40000
 interval = 500
 gen_length = 1000
-patience = 5 # stop after 5 reports of no improvement
+patience = 7 # stop after n reports of no improvement
 max_gap = 1.5  # stop if val loss exceeds train loss by this much
-vocab_size = 1000
+vocab_size = 2000
+eval_iters = 50 #steps over which we average losses
 
 # DATA --------------------------------------
 with open('input.txt', 'r', encoding='utf-8', errors='ignore') as file: #complete works of shakespeare
@@ -36,30 +38,69 @@ with open('input.txt', 'r', encoding='utf-8', errors='ignore') as file: #complet
 
 # VOCAB TOKENISER ------------------------------------------
 tokenizer = BasicTokenizer()
-tokenizer.train(text, vocab_size=vocab_size, verbose=False)
+tokenizer_mtime = None
+if os.path.exists('shakespeare_tokenizer.model'):
+    tokenizer.load('shakespeare_tokenizer.model')
+    tokenizer_mtime = os.path.getmtime('shakespeare_tokenizer.model')
+    print("Loaded tokeniser from file")
+else:
+    print("Training tokeniser...")
+    tokenizer.train(text, vocab_size=vocab_size, verbose=True)
+    tokenizer.save('shakespeare_tokenizer')
+    tokenizer_mtime = os.path.getmtime('shakespeare_tokenizer.model')
+    print("Tokeniser trained and saved")
 encode = lambda s: tokenizer.encode(s)
 decode = lambda l: tokenizer.decode(l)
 
-# ENCODE/DECODE ------------------------------------------
-encode = lambda s: enc.encode(s, allowed_special={'<|endoftext|>'})
-decode = lambda l: enc.decode(l)
 
 # TENSOR and SPLIT -----------------------------------
-data = torch.tensor(encode(text), dtype = torch.int64)
+cache_path = 'encoded_data.pt'
+input_mtime = os.path.getmtime('input.txt') if os.path.exists('input.txt') else None
+tokenizer_path = 'shakespeare_tokenizer.model'
+if tokenizer_mtime is None:
+    tokenizer_mtime = os.path.getmtime(tokenizer_path) if os.path.exists(tokenizer_path) else None
+
+data = None
+if os.path.exists(cache_path):
+    payload = torch.load(cache_path, map_location='cpu')
+    if payload.get('input_mtime') == input_mtime and payload.get('tokenizer_mtime') == tokenizer_mtime:
+        data = payload['data']
+        print("Loaded encoded dataset from cache")
+
+if data is None:
+    print("Encoding full input.txt (one-time cost)...")
+    t0 = time.time()
+    ids = encode(text)
+    print(f"Encoded {len(ids)} tokens in {time.time() - t0:.2f}s")
+    data = torch.tensor(ids, dtype=torch.int64)
+    torch.save(
+        {
+            'data': data,
+            'input_mtime': input_mtime,
+            'tokenizer_mtime': tokenizer_mtime,
+        },
+        cache_path,
+    )
+    print(f"Saved encoded dataset to {cache_path}")
 n=int(0.9*len(data))
 train_data = data[:n]
 val_data = data[n:]
+train_data = train_data.to(device)
+val_data = val_data.to(device)
+# Precompute token positions for windowing (0..context_block-1).
+t_idx = torch.arange(context_block, device=device)
 # data is encoded as one long tensor and then first 90% allocated as training data
 
 # SAMPLE SELECTION --------------------------------------------
 def sample(dataset): #input 'train' for training
     data = train_data if dataset == 'train' else val_data
-    samples=torch.randint(len(data)-context_block, (batch_size,)) # batch rand integers of max len-block
-    inputs = torch.stack([data[i:i+context_block] for i in samples]) # batch x block
-    targets = torch.stack([data[i+1:i+1+context_block] for i in samples]) # batch x block
-    inputs = inputs.to(device)
-    targets = targets.to(device)
-    return inputs, targets # both are batch x block
+    L = len(data)
+    idx = torch.randint(L - context_block, (batch_size,), device=data.device)  # batch
+
+    inputs  = data[idx[:, None] + t_idx[None, :]]      # batch x time
+    targets = data[idx[:, None] + t_idx[None, :] + 1]  # batch x time
+
+    return inputs, targets
 
 # SELF ATTENTION HEAD [obsolete]----------------------------------------
 class Head(nn.Module):
@@ -189,12 +230,12 @@ print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
 
 # LOSS ESTIMATION --------------------------
 @torch.no_grad()
-def estimate_loss():
+def estimate_loss(eval_iters=50):
     out = {}
     model.eval()
     for split in ['train', 'val']:
-        losses = torch.zeros(200)
-        for k in range(200):
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
             inputs, targets = sample(split)
             logits, loss = model(inputs, targets)
             losses[k] = loss.item()
@@ -206,7 +247,8 @@ def estimate_loss():
 print("What would you like to do?")
 print("  1. Train a new model")
 print("  2. Generate from saved model")
-mode = input("Enter 1 or 2: ").strip()
+print("  3. Examine loss landscape")
+mode = input("Enter 1, 2 or 3: ").strip()
 
 # TRAINING MODE -----------------------------
 warmup_steps = 10
@@ -248,7 +290,7 @@ if mode == '1':
         logits, loss = model(inputs, targets) # runs 'forward' pass
         loss.backward() # compute the gradient of the loss as a function of the parameters (back prop)
         if i % interval == 0 and i>0:
-            losses = estimate_loss()
+            losses = estimate_loss(eval_iters=eval_iters)
             val = losses['val']
             train = losses['train']
             elapsed = time.time() - start_time
@@ -304,6 +346,54 @@ elif mode == '2':
 
     print(f"Generated {gen_length} tokens to output.txt")
     os.startfile(output_path)
+
+#LOSS LANDSCAPE ---------------------------------
+elif mode == '3':
+    if not os.path.exists('model.pt'):
+        print("No saved model.")
+        exit()
+    model.load_state_dict(torch.load('model.pt', map_location=device))
+    model.eval()
+
+    original_params = [p.data.clone() for p in model.parameters()]
+#save weights
+
+    epsilons = [0.0, 0.0001, 0.000333, 0.001, 0.00333, 0.01, 0.0333, 0.1]
+    losses = []
+
+    for eps in epsilons:
+        for p, orig in zip(model.parameters(), original_params):
+            p.data = orig + eps * torch.randn_like(orig)
+        loss = estimate_loss()
+        losses.append((eps, loss['train'].item(), loss['val'].item()))
+        print(f"epsilon {eps:.4f}: train {loss['train']:.4f}, val {loss['val']:.4f}, gap {loss['val']-loss['train']:.4f}")
+
+    for p, orig in zip(model.parameters(), original_params):
+        p.data = orig.clone()
+# PLOT ----------------------------------------
+    epsilons_plot = [l[0] for l in losses]
+    train_plot    = [l[1] for l in losses]
+    val_plot      = [l[2] for l in losses]
+
+    fig, (ax) = plt.subplots(figsize=(8, 5))
+
+    ax.plot(epsilons_plot, train_plot, 'b-o', label='train loss')
+    ax.plot(epsilons_plot, val_plot, 'r-o', label='val loss')
+    ax.set_xlabel('Perturbation magnitude')
+    ax.set_ylabel('Loss')
+    ax.set_title('Loss vs Weight Perturbation')
+    ax.legend()
+    ax.grid(True)
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+
+
+    plt.tight_layout()
+    plot_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'loss_landscape.png')
+    plt.savefig(plot_path)
+    print(f"Plot saved to loss_landscape.png")
+    os.startfile(plot_path)
+
 else:
     print("Invalid option.")
     exit()
